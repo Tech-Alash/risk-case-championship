@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.venv/
+venv/
+artifacts/
+*.log
+final_dataset/
+catboost_info/
+tmp/
+*.db
+.tmp_hackathon_pdf.txt
+task_plan.md
+findings.md
+progress.md

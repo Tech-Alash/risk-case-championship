@@ -1,0 +1,242 @@
+{
+  "paths": {
+    "train_csv": "final_dataset/final_dataset/train.csv",
+    "test_csv": "final_dataset/final_dataset/test_final.csv",
+    "artifacts_dir": "artifacts"
+  },
+  "split": {
+    "test_size": 0.2,
+    "random_state": 42
+  },
+  "validation": {
+    "scheme": "group_time",
+    "group_column": "contract_number",
+    "time_column": "operation_date",
+    "time_holdout_start": "2022-09-22 00:00:00",
+    "group_kfold_n_splits": 5
+  },
+  "model": {
+    "max_iter": 300,
+    "ridge_alpha": 1.0
+  },
+  "preprocessing": {
+    "grain": "contract_number",
+    "progress_log_every_n": 20,
+    "missing": {
+      "numeric_default": "median",
+      "financial_fill": 0.0,
+      "add_missing_flags": true,
+      "add_missing_aggregates": true,
+      "missing_aggregate_prefixes": [
+        "SCORE_4_",
+        "SCORE_11_",
+        "SCORE_"
+      ],
+      "missing_flag_threshold": 0.05
+    },
+    "feature_pruning": {
+      "enabled": true,
+      "drop_exact_duplicates": true,
+      "drop_missing_share": true,
+      "corr_threshold": 0.995
+    },
+    "drift_pruning": {
+      "enabled": true,
+      "time_column": "operation_date",
+      "reference_share": 0.7,
+      "psi_threshold": 0.6,
+      "bins": 10,
+      "min_rows": 500,
+      "exclude_columns": [],
+      "exclude_patterns": [
+        "operation_date_*"
+      ]
+    },
+    "outliers": {
+      "winsorize": {
+        "low": 0.01,
+        "high": 0.99
+      }
+    },
+    "categorical": {
+      "rare_threshold": 0.005,
+      "rare_min_count": 200
+    },
+    "date_features": {
+      "columns": [
+        "operation_date"
+      ],
+      "features": [
+        "month",
+        "quarter",
+        "dayofweek",
+        "is_month_end",
+        "sin_month",
+        "cos_month"
+      ]
+    },
+    "target_encoding": {
+      "enabled": true,
+      "columns": [
+        "model",
+        "mark",
+        "ownerkato",
+        "region_name",
+        "car_year",
+        "bonus_malus"
+      ],
+      "smoothing": 20.0,
+      "min_samples_leaf": 100,
+      "noise_std": 0.0
+    },
+    "freq_encoding": {
+      "enabled": true,
+      "columns": [
+        "model",
+        "mark",
+        "ownerkato",
+        "region_name",
+        "car_year",
+        "bonus_malus"
+      ]
+    },
+    "interaction_features": {
+      "enabled": true,
+      "definitions": [
+        "premium_per_driver",
+        "premium_wo_term_per_driver",
+        "premium_per_power",
+        "premium_wo_term_per_power",
+        "car_age_x_bonus_malus",
+        "region_x_vehicle_type"
+      ]
+    },
+    "transforms": {
+      "log1p_columns": [
+        "premium",
+        "premium_wo_term",
+        "engine_volume_mean",
+        "engine_power_mean"
+      ]
+    },
+    "drop_columns": [
+      "unique_id",
+      "driver_iin",
+      "insurer_iin",
+      "car_number"
+    ],
+    "forbidden_feature_columns": [
+      "unique_id",
+      "contract_number",
+      "driver_iin",
+      "insurer_iin",
+      "car_number"
+    ],
+    "feature_whitelist_path": "artifacts/eda/feature_selection/feature_whitelist.csv",
+    "feature_droplist_path": "artifacts/eda/feature_selection/feature_droplist.csv",
+    "selection_rules": {
+      "force_keep": [
+        "premium",
+        "premium_wo_term"
+      ],
+      "force_drop": [
+        "unique_id",
+        "driver_iin",
+        "insurer_iin",
+        "car_number"
+      ]
+    },
+    "target_columns": [
+      "is_claim",
+      "claim_amount",
+      "claim_cnt"
+    ]
+  },
+  "logging": {
+    "level": "INFO"
+  },
+  "ablation": {
+    "enabled": false
+  },
+  "benchmark": {
+    "enabled": true,
+    "candidates": [
+      "baseline_freq_sev",
+      "xgboost_freq_sev",
+      "lightgbm_freq_sev",
+      "catboost_freq_sev",
+      "oof_blend_freq_sev"
+    ],
+    "stability_penalty": 0.0,
+    "must_pass_constraints": true,
+    "selection_metric": "policy_score",
+    "constraints": {
+      "max_violations": 0,
+      "lr_total_min": 0.69,
+      "lr_total_max": 0.71,
+      "share_group1_min": 0.0,
+      "share_group1_max": 1.0
+    },
+    "fallback_strategy": "best_metric",
+    "fallback_candidate": "baseline_freq_sev",
+    "random_state": 42,
+    "calibration": {
+      "enabled": false,
+      "method": "platt",
+      "oof_folds": 5,
+      "group_column": "contract_number",
+      "min_samples": 500,
+      "clip_eps": 1e-06
+    },
+    "candidate_params": {
+      "catboost_dep_freq_sev": {
+        "dep_oof_folds": 5,
+        "dep_frequency_signal_name": "freq_risk_signal",
+        "dep_use_frequency_signal": true
+      },
+      "oof_blend_freq_sev": {
+        "base_candidates": [
+          "catboost_freq_sev",
+          "xgboost_freq_sev",
+          "lightgbm_freq_sev"
+        ],
+        "oof_folds": 5,
+        "oof_group_column": "contract_number",
+        "weight_grid_step": 0.1
+      }
+    }
+  },
+  "pricing": {
+    "target_lr": 0.7,
+    "alpha_grid": {
+      "start": -0.6,
+      "stop": 2.0,
+      "num": 80
+    },
+    "beta_grid": {
+      "start": 0.8,
+      "stop": 1.8,
+      "num": 80
+    },
+    "optimization": {
+      "method": "grid",
+      "slsqp": {
+        "maxiter": 200,
+        "ftol": 1e-06,
+        "eps": 0.001
+      }
+    },
+    "stratified": {
+      "enabled": false,
+      "n_buckets": 5,
+      "bucket_on": "expected_loss",
+      "coordinate_passes": 2,
+      "min_bucket_size": 50,
+      "enforce_monotonic": true
+    },
+    "target_band": {
+      "min": 0.69,
+      "max": 0.71
+    }
+  }
+}

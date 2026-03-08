@@ -1,0 +1,36 @@
+{
+  "paths": {
+    "train_csv": "final_dataset/final_dataset/train.csv",
+    "test_csv": "final_dataset/final_dataset/test_final.csv"
+  },
+  "eda": {
+    "output_dir": "artifacts/eda",
+    "policy_grain_col": "contract_number",
+    "random_state": 42,
+    "sample_nrows": null,
+    "export_figures": true,
+    "max_numeric_correlation_features": 120,
+    "feature_selection": {
+      "policy_grain_col": "contract_number",
+      "target_column": "is_claim",
+      "missing_drop_threshold": 0.9,
+      "missing_review_threshold": 0.6,
+      "corr_review_threshold": 0.08,
+      "force_keep": [
+        "premium",
+        "premium_wo_term"
+      ],
+      "force_drop": [
+        "unique_id",
+        "contract_number",
+        "driver_iin",
+        "insurer_iin",
+        "car_number",
+        "is_claim",
+        "claim_amount",
+        "claim_cnt"
+      ],
+      "max_numeric_corr_features": 200
+    }
+  }
+}
