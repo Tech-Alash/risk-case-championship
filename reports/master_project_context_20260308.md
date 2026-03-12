@@ -157,16 +157,26 @@ Study: `catboost_tuning_stability_severity_only_20260304_140253`
 
 ### 4.5 Последний полный pipeline run
 
-`artifacts/latest_run.json` указывает на run `20260308_140918`.
+Исторический snapshot в этом master был зафиксирован на run `20260308_140918`, но на текущий момент active pointer уже обновлён.
 
-Ключевые значения (`artifacts/runs/20260308_140918/metrics.json`):
+Текущий active latest run:
+- `artifacts/latest_run.json` указывает на run `20260312_061840`
+- config freeze: `configs/release_catboost_trial70_threads4.json`
+- winner: `catboost_freq_sev`
+
+Ключевые значения (`artifacts/runs/20260312_061840/metrics.json`):
 - `policy_score = 0.4744704479`
 - `AUC = 0.7213892576`
 - `Gini = 0.4427785152`
 - `lr_total = 0.6956910980`
 - `feature_count = 164`
+- `violations = 0`
+- `in_target = true`
 
-Это **не** лучший `policy_score` run в истории, но это текущий latest full run pointer.
+Статус веток на текущий момент:
+- stable baseline `trial 70` — active champion candidate
+- `catboost_dep_freq_sev` — paused research, не release path
+- live freeze-status: `artifacts/ops/20260312_111528_freeze_trial70/freeze_status.json`
 
 ## 5) Полный каталог скриптов (`scripts/*.py`)
 
@@ -414,6 +424,18 @@ Get-Process -Id <pid> | Select-Object Id,StartTime,CPU,WorkingSet64
 - База Optuna (`catboost_tuning.db`) и launch-log не меняются существенно дольше типичной длительности trial.
 - В study есть старые `RUNNING` trial, у которых `datetime_start` сильно в прошлом (пример snapshot: trial `60` с `2026-03-06`).
 
+### 6.3 Live Freeze Override
+
+После этого snapshot был выполнен отдельный operational freeze baseline:
+- active stable run: `20260312_061840`
+- active config: `configs/release_catboost_trial70_threads4.json`
+- dependent FS research остановлен и сохранён как snapshot:
+  - `artifacts/ops/20260312_111528_freeze_trial70/dependent_fs_pause_summary.md`
+- финальный same-code stability rerun запущен из:
+  - `artifacts/ops/20260312_111528_freeze_trial70/stability_check_retry.log`
+- текущий status file freeze-процедуры:
+  - `artifacts/ops/20260312_111528_freeze_trial70/freeze_status.json`
+
 ## 7) Исполнимый playbook: Trial 74 vs Trial 70
 
 Цель: выбрать production champion между “лучший objective” (74) и “лучший std” (70).
@@ -484,6 +506,7 @@ Get-Process -Id <pid> | Select-Object Id,StartTime,CPU,WorkingSet64
 - Добавлен операционный блок мониторинга и критерии “идёт/зависло”.
 - Добавлен исполнимый playbook выбора champion между trial 74 и trial 70.
 - Добавлен блок проверок консистентности обновления.
+- После snapshot выполнен live freeze baseline `trial 70`: `latest_run.json` переведён на run `20260312_061840`, dependent FS помечен как paused research, финальный stability rerun вынесен в отдельный `ops`-status.
 
 Причина обновления:
 - Предыдущая версия была удобным short handover, но не покрывала глубоко эксплуатационные детали и полный каталог скриптов для нового инженера/большой модели.
