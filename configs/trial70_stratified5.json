@@ -1,8 +1,8 @@
 {
   "paths": {
-    "train_csv": "/content/drive/MyDrive/risk_case/data/train.csv",
-    "test_csv": null,
-    "artifacts_dir": "/content/drive/MyDrive/risk_case/artifacts"
+    "train_csv": "final_dataset/final_dataset/train.csv",
+    "test_csv": "final_dataset/final_dataset/test_final.csv",
+    "artifacts_dir": "artifacts"
   },
   "split": {
     "test_size": 0.2,
@@ -134,8 +134,8 @@
       "insurer_iin",
       "car_number"
     ],
-    "feature_whitelist_path": null,
-    "feature_droplist_path": null,
+    "feature_whitelist_path": "artifacts/eda/feature_selection/feature_whitelist.csv",
+    "feature_droplist_path": "artifacts/eda/feature_selection/feature_droplist.csv",
     "selection_rules": {
       "force_keep": [
         "premium",
@@ -163,9 +163,7 @@
   "benchmark": {
     "enabled": true,
     "candidates": [
-      "woe_freq_sev",
-      "tweedie_aggregate",
-      "oof_blend_freq_sev"
+      "catboost_freq_sev"
     ],
     "stability_penalty": 0.0,
     "must_pass_constraints": true,
@@ -178,7 +176,7 @@
       "share_group1_max": 1.0
     },
     "fallback_strategy": "configured_candidate",
-    "fallback_candidate": "oof_blend_freq_sev",
+    "fallback_candidate": "catboost_freq_sev",
     "random_state": 42,
     "calibration": {
       "enabled": false,
@@ -191,9 +189,7 @@
     "candidate_params": {
       "catboost_freq_sev": {
         "random_state": 42,
-        "task_type": "GPU",
-        "devices": "0",
-        "thread_count": 1,
+        "thread_count": 4,
         "iterations": 250,
         "learning_rate": 0.05,
         "depth": 6,
@@ -210,20 +206,6 @@
         "reg_border_count": 112,
         "severity_loss_function": "TWEEDIE",
         "tweedie_variance_power": 1.3429970066671788
-      },
-      "xgboost_freq_sev": {
-        "tree_method": "hist",
-        "device": "cuda",
-        "n_jobs": 2
-      },
-      "oof_blend_freq_sev": {
-        "base_candidates": [
-          "catboost_freq_sev",
-          "xgboost_freq_sev"
-        ],
-        "oof_folds": 5,
-        "oof_group_column": "contract_number",
-        "weight_grid_step": 0.1
       }
     }
   },
@@ -240,7 +222,7 @@
       "num": 80
     },
     "optimization": {
-      "method": "grid",
+      "method": "stratified_grid",
       "slsqp": {
         "maxiter": 200,
         "ftol": 1e-06,
@@ -248,7 +230,7 @@
       }
     },
     "stratified": {
-      "enabled": false,
+      "enabled": true,
       "n_buckets": 5,
       "bucket_on": "expected_loss",
       "coordinate_passes": 2,

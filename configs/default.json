@@ -162,9 +162,11 @@
     "enabled": true,
     "candidates": [
       "baseline_freq_sev",
+      "woe_freq_sev",
       "xgboost_freq_sev",
       "lightgbm_freq_sev",
       "catboost_freq_sev",
+      "tweedie_aggregate",
       "oof_blend_freq_sev"
     ],
     "stability_penalty": 0.0,
