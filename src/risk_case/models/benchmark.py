@@ -22,6 +22,8 @@ from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from risk_case.features.builder import FeatureSchema, infer_feature_schema, prepare_features
 from risk_case.models.frequency_severity import FrequencySeverityModel
 from risk_case.models.metrics import classification_metrics, severity_metrics
+from risk_case.models.tweedie_model import TweedieAggregateLossModel
+from risk_case.models.woe_baseline import WoEFrequencySeverityModel
 from risk_case.pricing.evaluator import (
     PricingEvaluation,
     RetentionConfig,
@@ -1056,6 +1058,30 @@ def _build_candidate_model(
             dep_oof_folds=int(params.get("dep_oof_folds", 5)),
             dep_frequency_signal_name=str(params.get("dep_frequency_signal_name", "freq_risk_signal")),
             dep_use_frequency_signal=bool(params.get("dep_use_frequency_signal", True)),
+        )
+
+    if candidate_name == "woe_freq_sev":
+        return WoEFrequencySeverityModel(
+            n_bins=int(params.get("n_bins", 10)),
+            min_bin_size=int(params.get("min_bin_size", 50)),
+            max_iter=int(params.get("max_iter", model_max_iter)),
+            ridge_alpha=float(params.get("ridge_alpha", model_ridge_alpha)),
+            iv_threshold=float(params.get("iv_threshold", 0.02)),
+            random_state=int(params.get("random_state", random_state)),
+        )
+
+    if candidate_name == "tweedie_aggregate":
+        return TweedieAggregateLossModel(
+            tweedie_variance_power=float(params.get("tweedie_variance_power", 1.5)),
+            iterations=int(params.get("iterations", 500)),
+            learning_rate=float(params.get("learning_rate", 0.05)),
+            depth=int(params.get("depth", 6)),
+            l2_leaf_reg=float(params.get("l2_leaf_reg", 3.0)),
+            random_state=int(params.get("random_state", random_state)),
+            thread_count=int(params.get("thread_count", -1)),
+            task_type=str(params.get("task_type", "CPU")),
+            devices=(str(params.get("devices")) if params.get("devices") is not None else None),
+            use_catboost=bool(params.get("use_catboost", True)),
         )
 
     raise ValueError(f"Unknown benchmark candidate: {candidate_name}")

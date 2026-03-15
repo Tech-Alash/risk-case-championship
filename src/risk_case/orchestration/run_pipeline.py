@@ -1207,6 +1207,100 @@ def run_experiment(config_path: Path) -> dict[str, Any]:
             model_path = run_dir / "model.joblib"
             _save_model(model, model_path)
 
+        # --- SHAP Explainability Report ---
+        shap_metrics: dict[str, Any] = {"status": "skipped"}
+        try:
+            from risk_case.explainability.shap_analysis import generate_shap_report
+
+            with log_stage(logger, "shap_explainability"):
+                shap_dir = ensure_dir(run_dir / "shap")
+                shap_metrics = generate_shap_report(
+                    model=model,
+                    df=valid_split,
+                    output_dir=shap_dir,
+                    max_samples=2000,
+                    top_n=20,
+                )
+                logger.info(
+                    "SHAP report: status=%s model_type=%s features=%d",
+                    shap_metrics.get("status"),
+                    shap_metrics.get("model_type"),
+                    shap_metrics.get("n_features", 0),
+                )
+        except Exception as exc:
+            logger.warning("SHAP report failed (non-fatal): %s", exc)
+            shap_metrics = {"status": "error", "error": str(exc)}
+
+        # --- WoE / IV Report (if WoE candidate was used or always for analysis) ---
+        woe_iv_metrics: dict[str, Any] = {"status": "skipped"}
+        try:
+            from risk_case.models.woe_baseline import compute_woe_iv, woe_iv_report_dataframe, woe_iv_summary_dataframe
+
+            with log_stage(logger, "woe_iv_analysis"):
+                woe_features = compute_woe_iv(train_split)
+                woe_report = woe_iv_report_dataframe(woe_features)
+                woe_summary = woe_iv_summary_dataframe(woe_features)
+                woe_dir = ensure_dir(run_dir / "woe_iv")
+                woe_report.to_csv(woe_dir / "woe_report.csv", index=False)
+                woe_summary.to_csv(woe_dir / "iv_summary.csv", index=False)
+                top_iv = woe_summary.head(10)
+                woe_iv_metrics = {
+                    "status": "ok",
+                    "total_features": len(woe_summary),
+                    "features_iv_above_002": int((woe_summary["iv"] >= 0.02).sum()),
+                    "features_iv_above_010": int((woe_summary["iv"] >= 0.10).sum()),
+                    "top_features": top_iv.to_dict(orient="records"),
+                    "report_path": str(woe_dir / "woe_report.csv"),
+                    "summary_path": str(woe_dir / "iv_summary.csv"),
+                }
+                logger.info(
+                    "WoE/IV analysis: %d features, %d with IV >= 0.02",
+                    woe_iv_metrics["total_features"],
+                    woe_iv_metrics["features_iv_above_002"],
+                )
+        except Exception as exc:
+            logger.warning("WoE/IV analysis failed (non-fatal): %s", exc)
+            woe_iv_metrics = {"status": "error", "error": str(exc)}
+
+        # --- Bootstrap Confidence Intervals ---
+        bootstrap_metrics: dict[str, Any] = {"status": "skipped"}
+        try:
+            from risk_case.models.bootstrap_ci import compute_bootstrap_ci, bootstrap_ci_dataframe
+
+            with log_stage(logger, "bootstrap_ci"):
+                ci_result = compute_bootstrap_ci(
+                    y_true=valid_split[TARGET_CLAIM_COL].fillna(0).astype(int).values,
+                    p_pred=valid_pred["p_claim"].values,
+                    premiums=valid_split[PREMIUM_COL].values if PREMIUM_COL in valid_split.columns else None,
+                    claims=pd.to_numeric(valid_split[TARGET_AMOUNT_COL], errors="coerce").fillna(0.0).values if TARGET_AMOUNT_COL in valid_split.columns else None,
+                    new_premiums=best_premium.values if hasattr(best_premium, "values") else None,
+                    n_bootstrap=500,
+                    confidence=0.95,
+                )
+                ci_df = bootstrap_ci_dataframe(ci_result)
+                ci_dir = ensure_dir(run_dir / "bootstrap_ci")
+                ci_df.to_csv(ci_dir / "confidence_intervals.csv", index=False)
+                (ci_dir / "bootstrap_ci.json").write_text(
+                    json.dumps(ci_result, ensure_ascii=False, indent=2, default=str),
+                    encoding="utf-8",
+                )
+                bootstrap_metrics = {
+                    "status": "ok",
+                    "n_bootstrap": ci_result.get("n_bootstrap"),
+                    "auc_ci": ci_result.get("auc"),
+                    "gini_ci": ci_result.get("gini"),
+                }
+                logger.info(
+                    "Bootstrap CI: AUC=[%.4f, %.4f] Gini=[%.4f, %.4f]",
+                    (ci_result.get("auc") or {}).get("lower", 0) or 0,
+                    (ci_result.get("auc") or {}).get("upper", 0) or 0,
+                    (ci_result.get("gini") or {}).get("lower", 0) or 0,
+                    (ci_result.get("gini") or {}).get("upper", 0) or 0,
+                )
+        except Exception as exc:
+            logger.warning("Bootstrap CI failed (non-fatal): %s", exc)
+            bootstrap_metrics = {"status": "error", "error": str(exc)}
+
         with log_stage(logger, "portfolio_diagnostics"):
             diagnostics_metrics = _build_portfolio_diagnostics(
                 valid_out=valid_out,
@@ -1272,6 +1366,9 @@ def run_experiment(config_path: Path) -> dict[str, Any]:
             "ablation": ablation_metrics,
             "benchmark": benchmark_metrics,
             "diagnostics": diagnostics_metrics,
+            "shap": shap_metrics,
+            "woe_iv": woe_iv_metrics,
+            "bootstrap_ci": bootstrap_metrics,
         }
 
         with log_stage(logger, "save_metrics_and_summary"):
