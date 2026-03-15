@@ -14,3 +14,10 @@ tmp/
 task_plan.md
 findings.md
 progress.md
+tmp_*.txt
+*.docx
+*.pdf
+*.xlsx
+reports/interim_results_latex/
+reports/jury_report_stage1_fact_pack/
+reports/jury_report_stage2_editorial_pack/

@@ -124,6 +124,28 @@ Run stability checks on multiple time holdout splits:
 python scripts/run_stability_checks.py --config configs/default.json --splits_config configs/experiments/stability_splits.json
 ```
 
+Google Colab GPU run:
+
+```bash
+git clone <your-repo-url>
+cd <repo-dir>
+pip install -r requirements.txt
+python scripts/run_pipeline.py --config configs/colab_gpu.json
+```
+
+Google Colab GPU stability run with resume:
+
+```bash
+python scripts/run_stability_checks.py --config configs/colab_gpu.json --splits_config configs/experiments/stability_splits.json --candidate oof_blend_freq_sev
+python scripts/run_stability_checks.py --config configs/colab_gpu.json --splits_config configs/experiments/stability_splits.json --candidate oof_blend_freq_sev --resume_from artifacts/stability/<timestamp>/oof_blend_checkpoint
+```
+
+Notes for Colab:
+
+- `configs/colab_gpu.json` enables GPU for `catboost` and `xgboost`.
+- The Colab config intentionally excludes `lightgbm_freq_sev` because the default Colab LightGBM wheel is often CPU-only.
+- The blend weight search and pricing evaluation still run on CPU, so GPU helps most on model fitting, not on every stage.
+
 Start API (after at least one pipeline run):
 
 ```bash

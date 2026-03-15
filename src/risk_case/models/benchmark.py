@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -27,7 +28,13 @@ from risk_case.pricing.evaluator import (
     StratifiedPricingConfig,
     select_best_pricing,
 )
-from risk_case.settings import TARGET_AMOUNT_COL, TARGET_CLAIM_COL
+from risk_case.settings import TARGET_AMOUNT_COL, TARGET_CLAIM_COL, ensure_dir
+
+warnings.filterwarnings(
+    "ignore",
+    message=r"X does not have valid feature names, but LGBM(Classifier|Regressor) was fitted with feature names",
+    category=UserWarning,
+)
 
 
 def _safe_float(value: Any, default: float = float("-inf")) -> float:
@@ -383,6 +390,8 @@ class CatBoostFrequencySeverityModel:
         thread_count: int = -1,
         severity_loss_function: str = "RMSE",
         tweedie_variance_power: float = 1.5,
+        task_type: str = "CPU",
+        devices: str | None = None,
     ) -> None:
         self.random_state = random_state
         self.iterations = iterations
@@ -402,6 +411,8 @@ class CatBoostFrequencySeverityModel:
         self.thread_count = thread_count
         self.severity_loss_function = severity_loss_function
         self.tweedie_variance_power = tweedie_variance_power
+        self.task_type = str(task_type or "CPU").strip().upper()
+        self.devices = str(devices).strip() if devices is not None else None
         self.schema: FeatureSchema | None = None
         self.severity_schema: FeatureSchema | None = None
         self.cat_feature_indices: list[int] = []
@@ -436,6 +447,8 @@ class CatBoostFrequencySeverityModel:
             loss_function="Logloss",
             random_seed=self.random_state,
             thread_count=self.thread_count,
+            task_type=self.task_type,
+            devices=self.devices,
             verbose=False,
         )
 
@@ -468,6 +481,8 @@ class CatBoostFrequencySeverityModel:
             loss_function=loss_function,
             random_seed=self.random_state,
             thread_count=self.thread_count,
+            task_type=self.task_type,
+            devices=self.devices,
             verbose=False,
         )
 
@@ -582,6 +597,8 @@ class DependentCatBoostFrequencySeverityModel(CatBoostFrequencySeverityModel):
         thread_count: int = -1,
         severity_loss_function: str = "RMSE",
         tweedie_variance_power: float = 1.5,
+        task_type: str = "CPU",
+        devices: str | None = None,
         dep_oof_folds: int = 5,
         dep_frequency_signal_name: str = "freq_risk_signal",
         dep_use_frequency_signal: bool = True,
@@ -605,6 +622,8 @@ class DependentCatBoostFrequencySeverityModel(CatBoostFrequencySeverityModel):
             thread_count=thread_count,
             severity_loss_function=severity_loss_function,
             tweedie_variance_power=tweedie_variance_power,
+            task_type=task_type,
+            devices=devices,
         )
         self.dep_oof_folds = max(2, int(dep_oof_folds))
         self.dep_frequency_signal_name = str(dep_frequency_signal_name)
@@ -867,6 +886,19 @@ def _build_candidate_model(
             "random_state": int(params.get("random_state", random_state)),
             "n_jobs": int(params.get("n_jobs", -1)),
         }
+        xgb_classifier_extra: dict[str, Any] = {}
+        xgb_regressor_extra: dict[str, Any] = {}
+        for source_key, target_key in [
+            ("tree_method", "tree_method"),
+            ("device", "device"),
+            ("predictor", "predictor"),
+            ("max_bin", "max_bin"),
+        ]:
+            if source_key in params:
+                xgb_classifier_extra[target_key] = params[source_key]
+            reg_key = f"reg_{source_key}"
+            if reg_key in params:
+                xgb_regressor_extra[target_key] = params[reg_key]
         return PipelineFrequencySeverityModel(
             classifier=XGBClassifier(
                 n_estimators=common["n_estimators"],
@@ -882,6 +914,7 @@ def _build_candidate_model(
                 eval_metric="logloss",
                 random_state=common["random_state"],
                 n_jobs=common["n_jobs"],
+                **xgb_classifier_extra,
             ),
             regressor=XGBRegressor(
                 n_estimators=int(params.get("reg_n_estimators", common["n_estimators"] + 40)),
@@ -896,6 +929,7 @@ def _build_candidate_model(
                 objective="reg:squarederror",
                 random_state=common["random_state"],
                 n_jobs=common["n_jobs"],
+                **xgb_regressor_extra,
             ),
         )
 
@@ -915,6 +949,19 @@ def _build_candidate_model(
             "n_jobs": int(params.get("n_jobs", -1)),
             "verbose": int(params.get("verbose", -1)),
         }
+        lgbm_classifier_extra: dict[str, Any] = {}
+        lgbm_regressor_extra: dict[str, Any] = {}
+        for source_key, target_key in [
+            ("device_type", "device_type"),
+            ("gpu_platform_id", "gpu_platform_id"),
+            ("gpu_device_id", "gpu_device_id"),
+            ("max_bin", "max_bin"),
+        ]:
+            if source_key in params:
+                lgbm_classifier_extra[target_key] = params[source_key]
+            reg_key = f"reg_{source_key}"
+            if reg_key in params:
+                lgbm_regressor_extra[target_key] = params[reg_key]
         return PipelineFrequencySeverityModel(
             classifier=LGBMClassifier(
                 n_estimators=common["n_estimators"],
@@ -926,6 +973,7 @@ def _build_candidate_model(
                 verbose=common["verbose"],
                 random_state=common["random_state"],
                 n_jobs=common["n_jobs"],
+                **lgbm_classifier_extra,
             ),
             regressor=LGBMRegressor(
                 n_estimators=int(params.get("reg_n_estimators", common["n_estimators"] + 40)),
@@ -937,6 +985,7 @@ def _build_candidate_model(
                 verbose=common["verbose"],
                 random_state=common["random_state"],
                 n_jobs=common["n_jobs"],
+                **lgbm_regressor_extra,
             ),
         )
 
@@ -969,6 +1018,8 @@ def _build_candidate_model(
             thread_count=int(params.get("thread_count", -1)),
             severity_loss_function=severity_loss_function,
             tweedie_variance_power=tweedie_variance_power,
+            task_type=str(params.get("task_type", "CPU")),
+            devices=(str(params.get("devices")) if params.get("devices") is not None else None),
         )
 
     if candidate_name == "catboost_dep_freq_sev":
@@ -1000,6 +1051,8 @@ def _build_candidate_model(
             thread_count=int(params.get("thread_count", -1)),
             severity_loss_function=severity_loss_function,
             tweedie_variance_power=tweedie_variance_power,
+            task_type=str(params.get("task_type", "CPU")),
+            devices=(str(params.get("devices")) if params.get("devices") is not None else None),
             dep_oof_folds=int(params.get("dep_oof_folds", 5)),
             dep_frequency_signal_name=str(params.get("dep_frequency_signal_name", "freq_risk_signal")),
             dep_use_frequency_signal=bool(params.get("dep_use_frequency_signal", True)),
@@ -1215,6 +1268,72 @@ def _evaluate_candidate_predictions(
     return ml, severity, alpha, beta, premium, pricing_eval
 
 
+def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_suffix(f"{path.suffix}.tmp")
+    tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp_path.replace(path)
+
+
+def _serialize_oof_checkpoint_candidate(payload: dict[str, Any] | None) -> dict[str, Any] | None:
+    if payload is None:
+        return None
+    return {
+        "weights": {str(key): float(value) for key, value in dict(payload.get("weights") or {}).items()},
+        "alpha": payload.get("alpha"),
+        "beta": payload.get("beta"),
+        "pricing_dict": dict(payload.get("pricing_dict") or {}),
+        "passes_constraints": bool(payload.get("passes_constraints", False)),
+        "metric_value": payload.get("metric_value"),
+    }
+
+
+def _deserialize_oof_checkpoint_candidate(payload: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(payload, dict):
+        return None
+    return {
+        "weights": {str(key): float(value) for key, value in dict(payload.get("weights") or {}).items()},
+        "alpha": payload.get("alpha"),
+        "beta": payload.get("beta"),
+        "pricing_dict": dict(payload.get("pricing_dict") or {}),
+        "passes_constraints": bool(payload.get("passes_constraints", False)),
+        "metric_value": payload.get("metric_value"),
+    }
+
+
+def _oof_blend_checkpoint_state_path(checkpoint_dir: Path) -> Path:
+    return checkpoint_dir / "state.json"
+
+
+def _oof_blend_checkpoint_predictions_path(checkpoint_dir: Path) -> Path:
+    return checkpoint_dir / "oof_predictions.joblib"
+
+
+def _load_oof_blend_checkpoint(checkpoint_dir: Path) -> tuple[dict[str, Any] | None, dict[str, pd.DataFrame] | None]:
+    state_path = _oof_blend_checkpoint_state_path(checkpoint_dir)
+    predictions_path = _oof_blend_checkpoint_predictions_path(checkpoint_dir)
+    state: dict[str, Any] | None = None
+    predictions: dict[str, pd.DataFrame] | None = None
+    if state_path.exists():
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+    if predictions_path.exists():
+        loaded = load(predictions_path)
+        if isinstance(loaded, dict):
+            predictions = loaded
+    return state, predictions
+
+
+def _save_oof_blend_checkpoint(
+    checkpoint_dir: Path,
+    state: dict[str, Any],
+    oof_predictions: dict[str, pd.DataFrame] | None = None,
+) -> None:
+    ensure_dir(checkpoint_dir)
+    if oof_predictions is not None:
+        dump(oof_predictions, _oof_blend_checkpoint_predictions_path(checkpoint_dir))
+    _write_json_atomic(_oof_blend_checkpoint_state_path(checkpoint_dir), state)
+
+
 def _evaluate_oof_blend_candidate(
     train_df: pd.DataFrame,
     valid_df: pd.DataFrame,
@@ -1229,6 +1348,7 @@ def _evaluate_oof_blend_candidate(
     pricing_retention: RetentionConfig | None,
     pricing_slsqp_options: dict[str, Any] | None,
     pricing_stratified_config: StratifiedPricingConfig | None,
+    logger: logging.Logger | None = None,
 ) -> tuple[Any, pd.DataFrame, dict[str, Any], dict[str, Any], float, float, pd.Series, PricingEvaluation, dict[str, Any]]:
     blend_params = dict(benchmark_config.candidate_params.get("oof_blend_freq_sev") or {})
     base_candidates = [str(item) for item in blend_params.get("base_candidates", ["catboost_freq_sev", "xgboost_freq_sev"])]
@@ -1239,6 +1359,50 @@ def _evaluate_oof_blend_candidate(
     oof_folds = int(blend_params.get("oof_folds", 5))
     oof_group_column = str(blend_params.get("oof_group_column", "contract_number"))
     weight_grid_step = float(blend_params.get("weight_grid_step", 0.05))
+    checkpoint_dir_raw = blend_params.get("resume_from_checkpoint") or blend_params.get("checkpoint_dir")
+    checkpoint_dir = Path(str(checkpoint_dir_raw)).resolve() if checkpoint_dir_raw else None
+    checkpoint_state: dict[str, Any] | None = None
+    checkpoint_predictions: dict[str, pd.DataFrame] | None = None
+    if checkpoint_dir is not None:
+        checkpoint_state, checkpoint_predictions = _load_oof_blend_checkpoint(checkpoint_dir)
+        if checkpoint_state:
+            expected_signature = {
+                "base_candidates": base_candidates,
+                "oof_folds": oof_folds,
+                "oof_group_column": oof_group_column,
+                "weight_grid_step": weight_grid_step,
+            }
+            actual_signature = {
+                "base_candidates": checkpoint_state.get("base_candidates"),
+                "oof_folds": checkpoint_state.get("oof_folds"),
+                "oof_group_column": checkpoint_state.get("oof_group_column"),
+                "weight_grid_step": checkpoint_state.get("weight_grid_step"),
+            }
+            if actual_signature != expected_signature:
+                raise ValueError(
+                    "OOF blend checkpoint parameters do not match current run configuration"
+                )
+            if logger:
+                logger.info(
+                    "OOF blend checkpoint loaded: dir=%s stage=%s completed_folds=%s completed_combos=%s updated_at_utc=%s",
+                    checkpoint_dir,
+                    checkpoint_state.get("stage"),
+                    len(checkpoint_state.get("completed_folds") or []),
+                    ((checkpoint_state.get("weight_search") or {}).get("completed_combos")),
+                    checkpoint_state.get("updated_at_utc"),
+                )
+
+    if logger:
+        logger.info(
+            "OOF blend start: base_candidates=%s oof_folds=%s group_column=%s weight_grid_step=%s train_rows=%s valid_rows=%s checkpoint_dir=%s",
+            base_candidates,
+            oof_folds,
+            oof_group_column,
+            weight_grid_step,
+            len(train_df),
+            len(valid_df),
+            str(checkpoint_dir) if checkpoint_dir else None,
+        )
 
     splits = _iter_cv_splits(
         df=train_df,
@@ -1246,15 +1410,66 @@ def _evaluate_oof_blend_candidate(
         random_state=benchmark_config.random_state,
         group_column=oof_group_column,
     )
-    oof_predictions = {
+    if logger:
+        logger.info("OOF blend prepared %s CV folds", len(splits))
+    oof_predictions = checkpoint_predictions or {
         candidate_name: pd.DataFrame(index=train_df.index, columns=["p_claim", "expected_severity", "expected_loss"], dtype=float)
         for candidate_name in base_candidates
     }
+    for candidate_name in base_candidates:
+        if candidate_name not in oof_predictions:
+            oof_predictions[candidate_name] = pd.DataFrame(
+                index=train_df.index,
+                columns=["p_claim", "expected_severity", "expected_loss"],
+                dtype=float,
+            )
 
-    for train_idx, valid_idx in splits:
+    completed_folds = {int(value) for value in (checkpoint_state or {}).get("completed_folds", [])}
+    checkpoint_base = checkpoint_state or {
+        "version": 1,
+        "stage": "oof_folds",
+        "base_candidates": base_candidates,
+        "oof_folds": oof_folds,
+        "oof_group_column": oof_group_column,
+        "weight_grid_step": weight_grid_step,
+        "completed_folds": [],
+        "weight_search": {
+            "completed_combos": 0,
+            "best_any": None,
+            "best_compliant": None,
+        },
+    }
+
+    total_fit_steps = max(1, len(splits) * len(base_candidates))
+    fit_step = 0
+    for fold_number, (train_idx, valid_idx) in enumerate(splits, start=1):
+        if fold_number in completed_folds:
+            fit_step += len(base_candidates)
+            if logger:
+                logger.info("OOF blend fold resume skip: %s/%s", fold_number, len(splits))
+            continue
         fold_train = train_df.iloc[train_idx]
         fold_valid = train_df.iloc[valid_idx]
+        if logger:
+            logger.info(
+                "OOF blend fold start: %s/%s train_rows=%s valid_rows=%s",
+                fold_number,
+                len(splits),
+                len(fold_train),
+                len(fold_valid),
+            )
         for candidate_name in base_candidates:
+            fit_step += 1
+            base_start = time.perf_counter()
+            if logger:
+                logger.info(
+                    "OOF blend base fit start: fold=%s/%s base=%s step=%s/%s",
+                    fold_number,
+                    len(splits),
+                    candidate_name,
+                    fit_step,
+                    total_fit_steps,
+                )
             _, fold_pred = _fit_predict_candidate(
                 candidate_name=candidate_name,
                 train_df=fold_train,
@@ -1264,6 +1479,29 @@ def _evaluate_oof_blend_candidate(
                 model_ridge_alpha=model_ridge_alpha,
             )
             oof_predictions[candidate_name].iloc[valid_idx] = fold_pred.loc[:, ["p_claim", "expected_severity", "expected_loss"]].values
+            if logger:
+                logger.info(
+                    "OOF blend base fit done: fold=%s/%s base=%s elapsed=%.2fs",
+                    fold_number,
+                    len(splits),
+                    candidate_name,
+                    float(time.perf_counter() - base_start),
+                )
+        if logger:
+            logger.info("OOF blend fold done: %s/%s", fold_number, len(splits))
+        completed_folds.add(fold_number)
+        if checkpoint_dir is not None:
+            checkpoint_base["stage"] = "oof_folds"
+            checkpoint_base["completed_folds"] = sorted(completed_folds)
+            checkpoint_base["updated_at_utc"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            _save_oof_blend_checkpoint(checkpoint_dir, checkpoint_base, oof_predictions=oof_predictions)
+            if logger:
+                logger.info(
+                    "OOF blend checkpoint saved: stage=oof_folds fold=%s/%s dir=%s",
+                    fold_number,
+                    len(splits),
+                    checkpoint_dir,
+                )
 
     for candidate_name, prediction in oof_predictions.items():
         if prediction.isna().any().any():
@@ -1273,11 +1511,34 @@ def _evaluate_oof_blend_candidate(
     weight_grid = _generate_simplex_weights(base_candidates, step=weight_grid_step)
     if not weight_grid:
         raise ValueError("Could not generate blend weight grid")
+    if logger:
+        logger.info("OOF blend weight search start: combinations=%s", len(weight_grid))
 
-    best_any: dict[str, Any] | None = None
-    best_compliant: dict[str, Any] | None = None
+    checkpoint_weight_search = dict(checkpoint_base.get("weight_search") or {})
+    best_any = _deserialize_oof_checkpoint_candidate(checkpoint_weight_search.get("best_any"))
+    best_compliant = _deserialize_oof_checkpoint_candidate(checkpoint_weight_search.get("best_compliant"))
+    completed_combos = int(checkpoint_weight_search.get("completed_combos") or 0)
+    if checkpoint_dir is not None:
+        checkpoint_base["stage"] = "weight_search"
+        checkpoint_base["completed_folds"] = sorted(completed_folds)
+        checkpoint_base["weight_search"] = {
+            "completed_combos": completed_combos,
+            "best_any": _serialize_oof_checkpoint_candidate(best_any),
+            "best_compliant": _serialize_oof_checkpoint_candidate(best_compliant),
+            "total_combos": len(weight_grid),
+        }
+        checkpoint_base["updated_at_utc"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        _save_oof_blend_checkpoint(checkpoint_dir, checkpoint_base, oof_predictions=oof_predictions)
+    log_every = max(1, len(weight_grid) // 10)
 
-    for weight_map in weight_grid:
+    for combo_idx, weight_map in enumerate(weight_grid, start=1):
+        if combo_idx <= completed_combos:
+            if logger and (combo_idx == completed_combos or combo_idx == 1):
+                logger.info("OOF blend weight resume skip: combo=%s/%s", combo_idx, len(weight_grid))
+            continue
+        combo_start = time.perf_counter()
+        if logger:
+            logger.info("OOF blend weight combo start: combo=%s/%s weights=%s", combo_idx, len(weight_grid), weight_map)
         blended_oof_pred = _blend_prediction_frames(oof_predictions, weights=weight_map)
         alpha, beta, premium, pricing_eval = select_best_pricing(
             df=train_df,
@@ -1305,18 +1566,64 @@ def _evaluate_oof_blend_candidate(
             "metric_value": metric_value,
         }
 
+        improved_any = False
+        improved_compliant = False
         if best_any is None or metric_value > best_any["metric_value"]:
             best_any = candidate_payload
+            improved_any = True
         if passes_constraints and (best_compliant is None or metric_value > best_compliant["metric_value"]):
             best_compliant = candidate_payload
+            improved_compliant = True
+
+        completed_combos = combo_idx
+        if checkpoint_dir is not None:
+            checkpoint_base["stage"] = "weight_search"
+            checkpoint_base["weight_search"] = {
+                "completed_combos": completed_combos,
+                "best_any": _serialize_oof_checkpoint_candidate(best_any),
+                "best_compliant": _serialize_oof_checkpoint_candidate(best_compliant),
+                "total_combos": len(weight_grid),
+            }
+            checkpoint_base["updated_at_utc"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            _save_oof_blend_checkpoint(checkpoint_dir, checkpoint_base)
+
+        if logger and (improved_any or improved_compliant or combo_idx == 1 or combo_idx == len(weight_grid) or combo_idx % log_every == 0):
+            logger.info(
+                "OOF blend weight progress: combo=%s/%s policy_score=%s passes=%s best_any=%s best_compliant=%s elapsed=%.2fs weights=%s",
+                combo_idx,
+                len(weight_grid),
+                pricing_dict.get("policy_score"),
+                passes_constraints,
+                best_any["pricing_dict"].get("policy_score") if best_any else None,
+                best_compliant["pricing_dict"].get("policy_score") if best_compliant else None,
+                float(time.perf_counter() - combo_start),
+                weight_map if (improved_any or improved_compliant) else None,
+            )
 
     selected = best_compliant or best_any
     if selected is None:
         raise ValueError("Failed to select blend weights")
+    if checkpoint_dir is not None:
+        checkpoint_base["stage"] = "weight_search_done"
+        checkpoint_base["selected_weights"] = dict(selected["weights"])
+        checkpoint_base["selected_oof_policy_score"] = selected["pricing_dict"].get("policy_score")
+        checkpoint_base["selected_constraints_pass"] = bool(selected["passes_constraints"])
+        checkpoint_base["updated_at_utc"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        _save_oof_blend_checkpoint(checkpoint_dir, checkpoint_base)
+    if logger:
+        logger.info(
+            "OOF blend weight search done: selected_weights=%s selected_oof_policy_score=%s selected_constraints_pass=%s",
+            selected["weights"],
+            selected["pricing_dict"].get("policy_score"),
+            selected["passes_constraints"],
+        )
 
     fitted_base_models: dict[str, Any] = {}
     valid_predictions_by_candidate: dict[str, pd.DataFrame] = {}
     for candidate_name in base_candidates:
+        base_start = time.perf_counter()
+        if logger:
+            logger.info("OOF blend full fit start: base=%s", candidate_name)
         base_model, base_valid_pred = _fit_predict_candidate(
             candidate_name=candidate_name,
             train_df=train_df,
@@ -1327,6 +1634,8 @@ def _evaluate_oof_blend_candidate(
         )
         fitted_base_models[candidate_name] = base_model
         valid_predictions_by_candidate[candidate_name] = base_valid_pred
+        if logger:
+            logger.info("OOF blend full fit done: base=%s elapsed=%.2fs", candidate_name, float(time.perf_counter() - base_start))
 
     blended_valid_pred = _blend_prediction_frames(valid_predictions_by_candidate, weights=selected["weights"])
     blend_model = OOFWeightedBlendModel(base_models=fitted_base_models, weights=selected["weights"])
@@ -1342,6 +1651,16 @@ def _evaluate_oof_blend_candidate(
         pricing_slsqp_options=pricing_slsqp_options,
         pricing_stratified_config=pricing_stratified_config,
     )
+    if logger:
+        pricing_dict = pricing_eval.to_dict()
+        logger.info(
+            "OOF blend final validation: policy_score=%s lr_total=%s alpha=%s beta=%s gini=%s",
+            pricing_dict.get("policy_score"),
+            pricing_dict.get("lr_total"),
+            alpha,
+            beta,
+            ml.get("gini"),
+        )
 
     blend_metadata = {
         "base_candidates": base_candidates,
@@ -1349,6 +1668,7 @@ def _evaluate_oof_blend_candidate(
         "oof_folds": oof_folds,
         "oof_group_column": oof_group_column,
         "weight_grid_step": weight_grid_step,
+        "checkpoint_dir": str(checkpoint_dir) if checkpoint_dir else None,
         "oof_policy_score": selected["pricing_dict"].get("policy_score"),
         "oof_constraints_pass": bool(selected["passes_constraints"]),
         "oof_alpha": selected["alpha"],
@@ -1465,6 +1785,7 @@ def run_model_benchmark(
                     pricing_retention=pricing_retention,
                     pricing_slsqp_options=pricing_slsqp_options,
                     pricing_stratified_config=pricing_stratified_config,
+                    logger=logger,
                 )
             else:
                 model, valid_pred = _fit_predict_candidate(

@@ -4,6 +4,7 @@ import argparse
 import json
 import logging
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -69,6 +70,12 @@ def parse_args() -> argparse.Namespace:
         default=0.35,
         help="Lambda for objective=mean_policy_score-lambda*std_policy_score in summary",
     )
+    parser.add_argument(
+        "--resume_from",
+        type=Path,
+        default=None,
+        help="Optional OOF blend checkpoint directory to resume from",
+    )
     return parser.parse_args()
 
 
@@ -116,6 +123,7 @@ def main() -> None:
     config_path = args.config.resolve()
     project_root = config_path.parents[1] if config_path.parent.name == "configs" else config_path.parent
     run_cfg = RunConfig.from_json(config_path)
+    run_started_at = time.perf_counter()
 
     if run_cfg.preprocessing.feature_whitelist_path:
         run_cfg.preprocessing.feature_whitelist_path = str(
@@ -133,6 +141,16 @@ def main() -> None:
     artifacts_root = _resolve_path(project_root, run_cfg.artifacts_dir)
     assert train_path is not None
     assert artifacts_root is not None
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    out_dir = ensure_dir(artifacts_root / "stability" / ts)
+    LOGGER.info(
+        "Stability run start: candidate=%s config=%s splits=%s out_dir=%s resume_from=%s",
+        args.candidate,
+        config_path,
+        splits_path,
+        out_dir,
+        str(args.resume_from.resolve()) if args.resume_from else None,
+    )
 
     candidate_params: dict[str, Any] = {}
     if args.params_json:
@@ -147,20 +165,35 @@ def main() -> None:
         candidate_params.setdefault("dep_oof_folds", 5)
         candidate_params.setdefault("dep_frequency_signal_name", "freq_risk_signal")
         candidate_params.setdefault("dep_use_frequency_signal", True)
+    if args.candidate == "oof_blend_freq_sev":
+        checkpoint_dir = args.resume_from.resolve() if args.resume_from else (out_dir / "oof_blend_checkpoint")
+        candidate_params["checkpoint_dir"] = str(checkpoint_dir)
+        if args.resume_from:
+            candidate_params["resume_from_checkpoint"] = str(checkpoint_dir)
+        LOGGER.info("OOF blend checkpoint configured: dir=%s", checkpoint_dir)
 
     target_band = _resolve_target_band(run_cfg)
     alpha_grid = np.linspace(run_cfg.pricing_alpha_start, run_cfg.pricing_alpha_stop, run_cfg.pricing_alpha_num)
     beta_grid = np.linspace(run_cfg.pricing_beta_start, run_cfg.pricing_beta_stop, max(1, run_cfg.pricing_beta_num))
     benchmark_cfg = _build_single_candidate_cfg(run_cfg, candidate=args.candidate, params=candidate_params)
 
+    data_start = time.perf_counter()
     raw_train_df = read_csv(train_path)
     validation = validate_dataset(raw_train_df)
     if not validation.ok:
         raise ValueError(f"Validation failed: {validation.errors}")
     policy_df = aggregate_to_policy_level(raw_train_df, contract_col=run_cfg.preprocessing.grain)
+    LOGGER.info(
+        "Stability data ready: raw_rows=%s policy_rows=%s elapsed=%.2fs",
+        len(raw_train_df),
+        len(policy_df),
+        float(time.perf_counter() - data_start),
+    )
 
     rows: list[dict[str, Any]] = []
-    for split_value in splits:
+    for split_idx, split_value in enumerate(splits, start=1):
+        split_start = time.perf_counter()
+        LOGGER.info("Stability split start: %s/%s holdout=%s", split_idx, len(splits), split_value)
         run_cfg.validation_time_holdout_start = split_value
         train_policy_split, valid_policy_split, split_meta = _split_policy_train_valid(
             policy_df=policy_df,
@@ -168,11 +201,21 @@ def main() -> None:
             logger=LOGGER,
         )
 
+        preprocess_start = time.perf_counter()
         preprocessor = fit_preprocessor(train_policy_split, run_cfg.preprocessing)
         train_df = transform_with_preprocessor(train_policy_split, preprocessor)
         valid_df = transform_with_preprocessor(valid_policy_split, preprocessor)
+        LOGGER.info(
+            "Stability preprocessing done: split=%s/%s train_rows=%s valid_rows=%s elapsed=%.2fs",
+            split_idx,
+            len(splits),
+            len(train_df),
+            len(valid_df),
+            float(time.perf_counter() - preprocess_start),
+        )
 
         if run_cfg.preprocessing.target_encoding_enabled and preprocessor.target_encoding_maps:
+            target_encoding_start = time.perf_counter()
             oof_target_encoding = build_oof_target_encoding_features(
                 df=train_policy_split,
                 state=preprocessor,
@@ -183,12 +226,20 @@ def main() -> None:
             )
             for column in oof_target_encoding.columns:
                 train_df[column] = oof_target_encoding[column].values
+            LOGGER.info(
+                "Stability target encoding done: split=%s/%s added_columns=%s elapsed=%.2fs",
+                split_idx,
+                len(splits),
+                len(oof_target_encoding.columns),
+                float(time.perf_counter() - target_encoding_start),
+            )
 
         if TARGET_CLAIM_COL not in train_df.columns:
             raise ValueError(f"{TARGET_CLAIM_COL} is missing after preprocessing")
         if TARGET_AMOUNT_COL not in train_df.columns:
             raise ValueError(f"{TARGET_AMOUNT_COL} is missing after preprocessing")
 
+        benchmark_start = time.perf_counter()
         result = run_model_benchmark(
             train_df=train_df,
             valid_df=valid_df,
@@ -207,6 +258,14 @@ def main() -> None:
                 "eps": float(run_cfg.pricing_slsqp_eps),
             },
             pricing_stratified_config=run_cfg.pricing_stratified,
+            logger=LOGGER,
+        )
+        LOGGER.info(
+            "Stability benchmark done: split=%s/%s winner=%s elapsed=%.2fs",
+            split_idx,
+            len(splits),
+            result.winner_name,
+            float(time.perf_counter() - benchmark_start),
         )
         candidate = result.results[0]
         pricing = candidate.pricing or {}
@@ -235,10 +294,17 @@ def main() -> None:
                 "severity_r2": severity.get("r2"),
             }
         )
+        LOGGER.info(
+            "Stability split done: %s/%s holdout=%s policy_score=%s constraints_pass=%s elapsed=%.2fs",
+            split_idx,
+            len(splits),
+            split_value,
+            pricing.get("policy_score"),
+            candidate.passes_constraints,
+            float(time.perf_counter() - split_start),
+        )
 
     results_df = pd.DataFrame(rows)
-    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    out_dir = ensure_dir(artifacts_root / "stability" / ts)
     results_csv = out_dir / "results.csv"
     summary_json = out_dir / "summary.json"
     results_df.to_csv(results_csv, index=False)
@@ -267,6 +333,8 @@ def main() -> None:
         "splits_config_path": str(splits_path),
         "candidate": args.candidate,
         "params_json_path": str(args.params_json.resolve()) if args.params_json else None,
+        "resume_from_checkpoint": str(args.resume_from.resolve()) if args.resume_from else None,
+        "oof_blend_checkpoint_dir": candidate_params.get("checkpoint_dir"),
         "n_splits": int(len(results_df)),
         "in_target_rate": in_target_rate,
         "constraints_pass_rate": constraints_pass_rate,
@@ -284,6 +352,13 @@ def main() -> None:
         "results_csv_path": str(results_csv),
     }
     summary_json.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+    LOGGER.info(
+        "Stability run done: candidate=%s out_dir=%s elapsed=%.2fs objective_value=%s",
+        args.candidate,
+        out_dir,
+        float(time.perf_counter() - run_started_at),
+        objective_value,
+    )
 
     print(
         json.dumps(

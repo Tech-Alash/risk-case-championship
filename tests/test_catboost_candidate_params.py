@@ -17,6 +17,7 @@ from risk_case.models.benchmark import (
     DependentCatBoostFrequencySeverityModel,
     _build_candidate_model,
 )
+from scripts.tune_catboost import _resolve_catboost_base_params
 
 
 class TestCatBoostCandidateParams(unittest.TestCase):
@@ -65,6 +66,27 @@ class TestCatBoostCandidateParams(unittest.TestCase):
         self.assertEqual(model.reg_border_count, 96)
         self.assertEqual(model.severity_loss_function, "TWEEDIE")
         self.assertAlmostEqual(model.tweedie_variance_power, 1.35)
+        self.assertEqual(model.task_type, "CPU")
+        self.assertIsNone(model.devices)
+
+    def test_catboost_candidate_accepts_gpu_params(self) -> None:
+        model = _build_candidate_model(
+            candidate_name="catboost_freq_sev",
+            model_max_iter=120,
+            model_ridge_alpha=1.0,
+            random_state=42,
+            candidate_params={
+                "catboost_freq_sev": {
+                    "iterations": 100,
+                    "task_type": "GPU",
+                    "devices": "0",
+                }
+            },
+        )
+
+        self.assertIsInstance(model, CatBoostFrequencySeverityModel)
+        self.assertEqual(model.task_type, "GPU")
+        self.assertEqual(model.devices, "0")
 
     def test_catboost_candidate_defaults_reg_params_to_none(self) -> None:
         model = _build_candidate_model(
@@ -109,6 +131,28 @@ class TestCatBoostCandidateParams(unittest.TestCase):
         self.assertEqual(model.dep_oof_folds, 7)
         self.assertEqual(model.dep_frequency_signal_name, "my_freq_signal")
         self.assertTrue(model.dep_use_frequency_signal)
+
+    def test_resolve_catboost_base_params_keeps_gpu_options_in_full_mode(self) -> None:
+        class DummyBenchmark:
+            def __init__(self) -> None:
+                self.candidate_params = {
+                    "catboost_freq_sev": {
+                        "task_type": "GPU",
+                        "devices": "0",
+                        "thread_count": 2,
+                    }
+                }
+
+        class DummyConfig:
+            def __init__(self) -> None:
+                self.benchmark = DummyBenchmark()
+                self.model_severity_loss = "RMSE"
+                self.model_tweedie_variance_power = 1.5
+
+        resolved = _resolve_catboost_base_params(DummyConfig(), mode="full", candidate="catboost_freq_sev")
+        self.assertEqual(resolved["task_type"], "GPU")
+        self.assertEqual(resolved["devices"], "0")
+        self.assertEqual(resolved["thread_count"], 2)
 
     def test_dependent_catboost_candidate_defaults_extra_params(self) -> None:
         model = _build_candidate_model(

@@ -444,11 +444,11 @@ def _suggest_catboost_params(trial: optuna.trial.Trial, phase: str, mode: str = 
 
 def _resolve_catboost_base_params(config: RunConfig, mode: str, candidate: str) -> dict[str, Any]:
     mode = str(mode).strip().lower()
-    if mode != "severity_only":
-        return {}
     base_params = dict(config.benchmark.candidate_params.get(candidate) or {})
     if not base_params and candidate == "catboost_dep_freq_sev":
         base_params = dict(config.benchmark.candidate_params.get("catboost_freq_sev") or {})
+    if mode != "severity_only":
+        return base_params
     if "severity_loss_function" not in base_params:
         base_params["severity_loss_function"] = str(config.model_severity_loss or "TWEEDIE")
     base_params["severity_loss_function"] = "TWEEDIE"
